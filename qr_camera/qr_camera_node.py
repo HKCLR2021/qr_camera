@@ -48,27 +48,41 @@ class QrCamera(Node):
             try:
                 data = client_socket.recv(1024)
                 if not data:
+                    self.get_logger().info(f"Client {address} disconnected gracefully")
                     break
-                raw_message = data.decode("utf-8")
+                raw_message = data.decode("utf-8").strip()
 
                 # TODO: parse the raw_message
+                parts = raw_message.split('#')
+                if len(parts) != 2:
+                    self.get_logger().error(f"Invalid message format from {address}: {raw_message}")
+                    continue
+                try:
+                    msg = CameraTrigger()
+                    msg.header.stamp = self.get_clock().now().to_msg()
+                    msg.header.frame_id = "qr_scan"
+                    msg.camera_id = int(parts[0])
+                    msg.material_box_id = int(parts[1])
+                    self.cam_tri_pub_.publish(msg)
+                except ValueError as e:
+                    self.get_logger().error(f"Invalid number format in message from {address}: {raw_message} - {e}")
+                except Exception as e:
+                    self.get_logger().error(f"Unexpected error processing message from {address}: {e}")
 
-                msg = CameraTrigger()
-                msg.header = self.get_clock().now()
-                msg.camera_id = 99999         # FIXME
-                msg.material_box_id = 99999   # FIXME
-
-                self.cam_tri_pub_.publish(msg)
                 self.get_logger().info(f"Received from {address}: {raw_message}")
-            except ConnectionError:
+            except (ConnectionError, ConnectionResetError) as e:
+                self.get_logger().info(f"Connection lost from {address}: {e}")
                 break
-            except ConnectionResetError:
-                break
+            except UnicodeDecodeError as e:
+                self.get_logger().error(f"Failed to decode message from {address}: {e}")
+                continue
+
         self.get_logger().info(f"Connection closed from {address}")
         client_socket.close()
 
         with self.client_threads_lock:
             self.client_threads.remove(threading.current_thread())
+            self.get_logger().info(f"Removed a thread from client_threads")
 
     def run_server(self):
         try:

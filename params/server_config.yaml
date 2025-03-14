@@ -1,4 +1,4 @@
 qr_camera_node:
   ros__parameters:
-    host: "127.0.0.1"     # IP address
+    host: "192.168.8.51"     # IP address
     port: 52007           # port
