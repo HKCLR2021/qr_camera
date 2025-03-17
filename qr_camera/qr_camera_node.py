@@ -1,4 +1,4 @@
-
+import sys
 import socket
 import threading
 
@@ -15,7 +15,7 @@ class QrCamera(Node):
     def __init__(self):
         super().__init__("qr_camera")
         self.declare_parameter("host", "127.0.0.1")
-        self.declare_parameter("port", 52007)
+        self.declare_parameter("port", 12345)
 
         self.host = self.get_parameter("host").value
         self.port = self.get_parameter("port").value
@@ -28,7 +28,10 @@ class QrCamera(Node):
         self.get_logger().info(f"Server listening on {self.host}:{self.port}")
 
         self.client_threads = []
-        self.client_threads_lock = threading.Lock()  # Add a lock for thread safety
+        self.client_threads_lock = threading.Lock()
+        self.client_sockets = []  # Added to track client sockets
+        self.client_sockets_lock = threading.Lock()  # Lock for client sockets
+        self.shutting_down_event = threading.Event()  # Event to signal shutdown
 
         self.server_thread = threading.Thread(target=self.run_server)
         self.server_thread.start()
@@ -81,41 +84,90 @@ class QrCamera(Node):
                 continue
 
         self.get_logger().info(f"Connection closed from {address}")
-        client_socket.close()
+        try:
+            client_socket.close()
+        except OSError:
+            pass  # Socket might already be closed during shutdown
 
+        with self.client_sockets_lock:
+            if client_socket in self.client_sockets:
+                self.client_sockets.remove(client_socket)
+                
         with self.client_threads_lock:
-            self.client_threads.remove(threading.current_thread())
-            self.get_logger().info(f"Removed a thread from client_threads")
+            if threading.current_thread() in self.client_threads:
+                self.client_threads.remove(threading.current_thread())
+
+        self.get_logger().info(f"Connection closed and cleaned up for {address}")
 
     def run_server(self):
         try:
-            while rclpy.ok():
-                client_socket, address = self.server_socket.accept()
-                client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address))
-                client_thread.start()
-                with self.client_threads_lock:
-                    self.client_threads.append(client_thread)
+            while not self.shutting_down_event.is_set() and rclpy.ok():
+                try:
+                    client_socket, address = self.server_socket.accept()
+                    with self.client_sockets_lock:
+                        self.client_sockets.append(client_socket)
+                    client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address))
+                    client_thread.start()
+                    with self.client_threads_lock:
+                            self.client_threads.append(client_thread)
+
+                except OSError as e:
+                    if self.shutting_down_event.is_set():
+                        break  # Expected during shutdown when server socket is closed
+                    self.get_logger().error(f"Error accepting connection: {e}")           
         except KeyboardInterrupt:
             self.get_logger().info("Server shutting down...")
         finally:
-            self.server_socket.close()
-            with self.client_threads_lock:
-                for thread in self.client_threads:
-                    thread.join()
+            try:
+                self.server_socket.close()
+            except OSError:
+                pass
 
+            # Close all client sockets to unblock threads
+            with self.client_sockets_lock:
+                for client_socket in self.client_sockets[:]:  # Copy list to avoid modification issues
+                    try:
+                        client_socket.close()
+                    except OSError:
+                        pass  # Socket might already be closed
+                self.client_sockets.clear()
+
+            with self.client_threads_lock:
+                for thread in self.client_threads[:]:  # Copy list to avoid modification issues
+                    thread.join()
+                self.client_threads.clear()
+
+            self.get_logger().info("Server shutdown complete")
+
+    def destroy_node(self):
+        self.shutting_down_event.set()
+        try:
+            self.server_socket.close()  # Close server socket to break accept()
+        except OSError:
+            pass
+        self.server_thread.join()
+
+        self.get_logger().info("destroy_node is called")
+        super().destroy_node()
 
 def main(args=None):
+    rclpy.init(args=args)
     try:
-        rclpy.init(args=args)
         node = QrCamera()
         executor = MultiThreadedExecutor()
         executor.add_node(node)
-        executor.spin()
-    except (KeyboardInterrupt, ExternalShutdownException):
+        try:
+            executor.spin()
+        finally:
+            executor.shutdown()
+            node.destroy_node()
+    except KeyboardInterrupt:
         pass
+    except ExternalShutdownException:
+        sys.exit(1)
     finally:
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.try_shutdown()
+
 
 if __name__ == "__main__":
     main()
