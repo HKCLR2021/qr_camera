@@ -20,10 +20,6 @@ class QrCamera(Node):
         self.host = self.get_parameter("host").value
         self.port = self.get_parameter("port").value
 
-        self.cam_tri_pub_ = self.create_publisher(CameraTrigger, "qr_camera_scan", 10)
-        self.cam_status_pub_ = self.create_publisher(CameraStatus, "qr_camera_status", 10)
-        self.status_timer = self.create_timer(1.0, self.status_cb)
-
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
@@ -36,6 +32,13 @@ class QrCamera(Node):
 
         self.server_thread = threading.Thread(target=self.run_server)
         self.server_thread.start()
+
+        # Publishers
+        self.cam_tri_pub_ = self.create_publisher(CameraTrigger, "qr_camera_scan", 10)
+        self.cam_status_pub_ = self.create_publisher(CameraStatus, "qr_camera_status", 10)
+
+        # Timers
+        self.status_timer = self.create_timer(1.0, self.status_cb)
 
     def status_cb(self):
         # To be implemented
